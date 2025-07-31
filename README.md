@@ -1,4 +1,4 @@
 Requerimentos:
 
-OpenCv Python
+OpenCv Python 3.13
 TesseractOCR
