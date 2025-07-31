@@ -1,1 +1,4 @@
-# Reconhecimento-Visual-de-Algoritmos-F-sicos
+Requerimentos:
+
+OpenCv Python
+TesseractOCR
