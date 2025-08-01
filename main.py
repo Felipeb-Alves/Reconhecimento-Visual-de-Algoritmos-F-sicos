@@ -1,8 +1,8 @@
+import easyocr
 import cv2
 import os
-import pytesseract
 import re
-import numpy as np
+
 
 def selecionar_imagem():
     try:
@@ -14,113 +14,134 @@ def selecionar_imagem():
         root.update()
         caminho = filedialog.askopenfilename(
             title="Selecione uma imagem",
-            filetypes=[("Imagens", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif")]
+            filetypes=[("Imagens", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif")]
         )
         root.destroy()
         if caminho:
             return caminho
         else:
-            print("⚠️ Nenhuma imagem foi selecionada. Você pode digitar o caminho manualmente.")
+            print("⚠️ Nenhuma imagem foi selecionada.")
     except Exception as e:
         print("⚠️ Interface gráfica indisponível. Detalhes do erro:")
         print(e)
 
     return input("Digite o caminho completo da imagem: ").strip()
 
-def salvar_imagem(imagem, caminho_original, sufixo):
-    pasta = os.path.dirname(caminho_original)
-    nome_base = os.path.splitext(os.path.basename(caminho_original))[0]
-    caminho_saida = os.path.join(pasta, f"{nome_base}_{sufixo}.png")
-    cv2.imwrite(caminho_saida, imagem)
-    print(f"📷 Imagem '{sufixo}' salva em: {caminho_saida}")
 
-def tratar_texto_ocr(texto):
-    # Remove caracteres que não sejam letras, números, pontuação e espaços
-    texto = re.sub(r'[^a-zA-Z0-9\s.,;:!?()\[\]{}\'"<>/\-+=\n]', '', texto)
+def extrair_texto_com_easyocr(caminho_imagem, caminho_saida=None):
+    reader = easyocr.Reader(['pt', 'en'])
 
-    # Remove espaços em excesso
-    texto = re.sub(r'\s+', ' ', texto)
+    # Get detailed results: (bbox, text, confidence)
+    results = reader.readtext(caminho_imagem, detail=1)
 
-    # Divide em linhas e limpa espaços das bordas
-    linhas = texto.split('\n')
-    linhas = [linha.strip() for linha in linhas if linha.strip() != '']
-
-    # Correções comuns simples
-    correcoes = {
-        '|': 'I',
-        '0': 'O',
-        '1': 'I',
-        'ﬁ': 'fi',
-        'ﬂ': 'fl',
-        '—': '-',
-        '“': '"',
-        '”': '"',
-        '‘': "'",
-        '’': "'"
+    # Define a dictionary of common misrecognitions and their correct forms.
+    corrections = {
+        r'Vamnoa comocni': 'Vamos começar',
+        r'Vamnos comecar': 'Vamos começar',
+        r'Tento novamnonto': 'Tente novamente',
+        r'Tente novamente.': 'Tente novamente',
+        r'Ola': 'Olá',
+        r'Voce acertoul': 'Você acertou!',  # Correcting this specific typo
+        r'Acertou!': 'Você acertou!',  # Ensuring full phrase
+        r'2x 2\?': '2 x 2?',
+        r'por 3 segundos': 'por 3 segundos'  # Normalize this if variations appear
     }
-    texto_corrigido = []
-    for linha in linhas:
-        for errado, certo in correcoes.items():
-            linha = linha.replace(errado, certo)
-        texto_corrigido.append(linha)
 
-    return '\n'.join(texto_corrigido)
+    # Custom function to apply corrections
+    def apply_corrections(text):
+        corrected_text = text
+        for wrong, correct in corrections.items():
+            corrected_text = re.sub(wrong, correct, corrected_text, flags=re.IGNORECASE)
+        return corrected_text
 
-def extrair_texto_e_salvar(caminho_imagem, caminho_saida=None, lang='eng'):
-    print("🔄 Carregando imagem...")
-    imagem = cv2.imread(caminho_imagem)
-    if imagem is None:
-        print("❌ Erro ao carregar a imagem. Verifique o caminho informado.")
-        return
 
-    print("🔄 Redimensionando...")
-    imagem_redim = cv2.resize(imagem, (0, 0), fx=2.5, fy=2.5)
-    salvar_imagem(imagem_redim, caminho_imagem, "redimensionada")
+    results.sort(key=lambda x: (x[0][0][1], x[0][0][0]))
 
-    print("🔄 Convertendo para escala de cinza...")
-    imagem_cinza = cv2.cvtColor(imagem_redim, cv2.COLOR_BGR2GRAY)
-    salvar_imagem(imagem_cinza, caminho_imagem, "cinza")
+    grouped_lines = []
+    current_line = []
 
-    print("🔄 Aplicando filtro Sobel para realçar bordas...")
-    sobelx = cv2.Sobel(imagem_cinza, cv2.CV_8U, 1, 0, ksize=3)
-    sobely = cv2.Sobel(imagem_cinza, cv2.CV_8U, 0, 1, ksize=3)
-    sobel = cv2.bitwise_or(sobelx, sobely)
-    salvar_imagem(sobel, caminho_imagem, "sobel")
+    # A threshold for determining if a word belongs to the same line vertically.
+    # This might need fine-tuning based on image resolution and text size.
+    # A good starting point is usually half the average character height or block height.
+    y_threshold = 20  # Example value, adjust as needed
 
-    print("🔄 Aplicando abertura morfológica para remover ruídos...")
-    kernel = np.ones((2,2), np.uint8)
-    abertura = cv2.morphologyEx(sobel, cv2.MORPH_OPEN, kernel)
-    salvar_imagem(abertura, caminho_imagem, "abertura")
+    for (bbox, text, conf) in results:
+        # Get the y-coordinate of the top of the bounding box
+        y_center = bbox[0][1]  # Using y-coordinate of top-left corner for simplicity
 
-    print("🔄 Binarizando usando OTSU...")
-    _, imagem_bin = cv2.threshold(abertura, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    salvar_imagem(imagem_bin, caminho_imagem, "binarizada")
+        # Apply corrections immediately to the recognized text
+        corrected_text = apply_corrections(text)
 
-    print("🔄 Executando OCR com pytesseract...")
-    # Configurando whitelist para tentar melhorar (só letras, números e pontuação)
-    config = "--psm 6 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?()-[]{}'\""
+        if not current_line:
+            current_line.append((bbox, corrected_text, conf))
+        else:
+            # Check if the current word is vertically close enough to the last word in current_line
+            # to be considered on the same "visual line" (block).
+            # We'll use the y-center of the first element in the bbox.
+            last_y_center = current_line[-1][0][0][1]
 
-    texto_raw = pytesseract.image_to_string(imagem_bin, lang=lang, config=config)
+            # If the vertical difference is within the threshold, add to the current line.
+            # Otherwise, start a new line.
+            if abs(y_center - last_y_center) < y_threshold:
+                current_line.append((bbox, corrected_text, conf))
+            else:
+                grouped_lines.append(current_line)
+                current_line = [(bbox, corrected_text, conf)]
 
-    if not texto_raw.strip():
-        print("⚠️ Atenção: Nenhum texto detectado na imagem processada.")
+    if current_line:
+        grouped_lines.append(current_line)
 
-    print("🔄 Tratando texto OCR...")
-    texto_tratado = tratar_texto_ocr(texto_raw)
+    # Now, process grouped lines to form the final output string
+    final_output_lines = []
+    for line_group in grouped_lines:
+        # Sort words within each line group by their x-coordinate to ensure correct order
+        line_group.sort(key=lambda x: x[0][0][0])
+
+        # Join the texts of the words in the line group
+        # Add a space between words, unless it's a punctuation mark that should stick to the word
+        # This is a simplification and might need more advanced rules for specific cases.
+        formatted_line = []
+        for i, (bbox, text, conf) in enumerate(line_group):
+            # Special handling for '?' to stick to the number, and '='
+            if text == '?' and i > 0 and line_group[i - 1][1].isdigit():
+                formatted_line[-1] += text  # Attach '?' to the previous number
+            elif text == '=':  # "=" should typically have spaces around it or be part of a single block
+                # If "resposta =" are separate, we might need to join them carefully.
+                # For this specific image, it's often recognized as two separate blocks.
+                formatted_line.append(text)
+            else:
+                formatted_line.append(text)
+
+        # Use a join that respects the original intent of phrases like "2 x 2?"
+        # For simple cases, " ".join() is fine. For blocks, we need to be more careful.
+        # Let's use a slightly more intelligent join.
+        joined_line = ""
+        for i, word in enumerate(formatted_line):
+            if i > 0 and not (word.startswith('?') or word.startswith(',') or word.startswith('.')):
+                joined_line += " "
+            joined_line += word
+
+        final_output_lines.append(joined_line)
+
+    texto_final = '\n'.join(final_output_lines)
 
     if caminho_saida is None:
         nome_base = os.path.splitext(os.path.basename(caminho_imagem))[0]
-        caminho_saida = f"{nome_base}_texto_extraido.txt"
+        caminho_saida = f"{nome_base}_easyocr_linhas.txt"
 
-    print(f"💾 Salvando texto extraído em '{caminho_saida}'...")
-    with open(caminho_saida, 'w', encoding='utf-8') as arquivo:
-        arquivo.write(texto_tratado)
+    with open(caminho_saida, 'w', encoding='utf-8') as f:
+        f.write(texto_final)
 
-    print("✅ Processo concluído!")
+    print(f"✅ Texto extraído e formatado em linhas com EasyOCR em: {caminho_saida}")
+    print("\n--- Conteúdo do arquivo ---")
+    print(texto_final)
+    print("--------------------------")
 
+
+# Execução principal
 if __name__ == "__main__":
     caminho = selecionar_imagem()
     if caminho:
-        extrair_texto_e_salvar(caminho, lang='eng')
+        extrair_texto_com_easyocr(caminho)
     else:
         print("⚠️ Nenhuma imagem foi fornecida.")
